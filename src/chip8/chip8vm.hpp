@@ -9,6 +9,21 @@
 
 namespace CHIP8
 {
+    struct DecodedOpcode
+    {
+        static constexpr auto NIBBLE_SIZE = 4;
+        std::array<std::uint8_t, 4> nibbles;
+
+        DecodedOpcode(std::uint16_t opcode);
+
+        std::uint16_t ToUInt16(size_t nibbleCount) const;
+        std::byte GetValue() const;
+        std::uint16_t GetAddress() const;
+
+        //first = x, second = y
+        std::pair<std::uint8_t, std::uint8_t> GetRegIndices() const;
+    };
+
     class VirtualMachine
     {
         static constexpr unsigned int 
@@ -20,28 +35,49 @@ namespace CHIP8
             INITIAL_ADDRESS = 0x200,
             INSTRUCTION_WIDTH = 2;
         
-        using Instruction = std::function<void(VirtualMachine* vm, std::uint16_t)>;
+        using Instruction = std::function<void(VirtualMachine* vm, const DecodedOpcode&)>;
 
         std::array<std::byte, MEMORY_SIZE> m_memory;
         std::array<std::byte, REGISTER_COUNT> m_registers;
         std::uint16_t m_addressRegister, m_programCounter;
         std::array<std::bitset<DISPLAY_WIDTH>, DISPLAY_HEIGHT> m_displayMemory;
+
         std::array<Instruction, 16> m_instructionTable;
 
         std::uint16_t FetchNextInstruction() const;
-        Instruction Decode(std::uint16_t opcode) const;
+        Instruction GetInstruction(const DecodedOpcode& decodedOpcode) const;
 
         /*Instructions*/ 
 
-        void ZeroPrefixInstuctions(std::uint16_t opcode);
+        void UnimplementedInstruction(const DecodedOpcode& decodedOpcode);
+
+        //prefix = 0
+        void ZeroPrefixInstuctions(const DecodedOpcode& decodedOpcode);
         void ClearDisplay();
 
-        void Jump(std::uint16_t opcode);
+        //prefix = 1
+        void Jump(const DecodedOpcode& decodedOpcode);
     
-        void Call(std::uint16_t opcode);
+        //prefix = 2
+        void Call(const DecodedOpcode& decodedOpcode);
 
+        //helper function
         void SkipNextInstruction();
-        void SkipOnRegValEqual(std::uint16_t opcode);
+
+        //prefix = 3
+        void SkipOnRegValEqual(const DecodedOpcode& decodedOpcode);
+
+        //prefix = 4
+        void SkipOnRegValNotEqual(const DecodedOpcode& decodedOpcode);
+
+        //prefix = 5
+        void SkipOnRegsEqual(const DecodedOpcode& decodedOpcode);
+
+        //prefix = 6
+        void SetReg(const DecodedOpcode& decodedOpcode);
+
+        //prefix = 7
+        void Add(const DecodedOpcode& decodedOpcode);
 
     public:
         VirtualMachine();

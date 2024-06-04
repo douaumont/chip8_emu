@@ -2,44 +2,64 @@
 #include <bitset>
 #include <cstddef>
 #include <stdexcept>
-#include <type_traits>
 #include <ranges>
-#include <utility>
 #include <source_location>
 #include <format>
 
 namespace  
 {
-    template<typename Integer, typename Count>
-    requires(std::is_integral_v<Integer> and std::is_unsigned_v<Integer>)
-    Integer ExtractFirstNBits(Integer num, Count count)
-    {
-        std::bitset<sizeof(Integer) * 8> mask;
-        for (const auto bitIndex : std::views::iota(0, count))
-        {
-            mask[bitIndex] = true;
-        }
-        return num & (mask.to_ullong());
-    }
-
-    template<typename Integer, typename Index>
-    requires(std::is_integral_v<Integer> and std::is_unsigned_v<Integer>)
-    Integer ExtractNthNibble(Integer num, Index index)
-    {
-        constexpr auto NIBBLE_SIZE = 4;
-        std::bitset<sizeof(num) * 8> mask;
-        for (const auto bitIndex : std::views::iota(index * NIBBLE_SIZE, index * NIBBLE_SIZE + NIBBLE_SIZE))
-        {
-            mask[bitIndex] = true;
-        }
-        return (num & mask.to_ullong()) >> (index * NIBBLE_SIZE);
-    }
-
     void unimplemented(const std::source_location& srcLoc)
     {
         throw std::runtime_error {std::format("Unimplemented at {}:{}:{}", srcLoc.file_name(), srcLoc.function_name(), srcLoc.line())};
     }
 }
+
+CHIP8::DecodedOpcode::DecodedOpcode(std::uint16_t opcode)
+{
+    std::bitset<16> opcodeBits {opcode};
+    for (auto&& [nibbleIndex, nibble] : nibbles | std::views::enumerate)
+    {
+        std::bitset<NIBBLE_SIZE> nibbleValue;
+        for (const auto bitIndex : std::views::iota(0, NIBBLE_SIZE))
+        {
+            nibbleValue[bitIndex] = opcodeBits.test(nibbleIndex * NIBBLE_SIZE + bitIndex);
+        }
+        nibble = nibbleValue.to_ulong();
+    }
+}
+
+std::uint16_t CHIP8::DecodedOpcode::ToUInt16(size_t nibbleCount) const
+{
+    if (nibbleCount > nibbles.size())
+    {
+        const auto srcLoc = std::source_location::current();
+        throw std::invalid_argument(std::format("{}:{}:{}: nibbleCount must be less or equal to {}", srcLoc.file_name(), srcLoc.line(), srcLoc.column(), nibbles.size()));
+    }
+
+    std::uint16_t result {0};
+    for (auto&& [nibbleIndex, nibble] : nibbles | std::views::take(nibbleCount) | std::views::enumerate)
+    {
+        const auto offset = nibbleIndex * DecodedOpcode::NIBBLE_SIZE;
+        result |= (nibble << offset);
+    }
+    return result;
+}
+
+std::byte CHIP8::DecodedOpcode::GetValue() const
+{
+    return std::byte {static_cast<std::uint8_t>(ToUInt16(2))};
+}
+
+std::uint16_t CHIP8::DecodedOpcode::GetAddress() const
+{
+    return ToUInt16(3);
+}
+
+std::pair<std::uint8_t, std::uint8_t> CHIP8::DecodedOpcode::GetRegIndices() const
+{
+    return {nibbles.at(2), nibbles.at(3)};
+}
+
 
 CHIP8::VirtualMachine::VirtualMachine()
     :
@@ -49,6 +69,8 @@ CHIP8::VirtualMachine::VirtualMachine()
     m_displayMemory.fill(0);
     m_registers.fill(std::byte{0});
     m_memory.fill(std::byte{0});
+
+    m_instructionTable.fill(Instruction {&CHIP8::VirtualMachine::UnimplementedInstruction});
 
     m_instructionTable = 
     {
@@ -66,7 +88,9 @@ void CHIP8::VirtualMachine::OnClock()
     //increase value of program counter
     m_programCounter += INSTRUCTION_WIDTH;
     //decode it
-    const auto instruction = Decode(opcode);
+    const auto decodedOpcode = DecodedOpcode{opcode};
+    //find instruction
+    const auto instruction = GetInstruction(decodedOpcode);
     //execute it
     instruction(this, opcode);
 }
@@ -81,25 +105,29 @@ std::uint16_t CHIP8::VirtualMachine::FetchNextInstruction() const
     return opcodeValue;
 }
 
-CHIP8::VirtualMachine::Instruction CHIP8::VirtualMachine::Decode(std::uint16_t opcode) const
+CHIP8::VirtualMachine::Instruction CHIP8::VirtualMachine::GetInstruction(const DecodedOpcode& decodedOpcode) const
 {
-    const auto prefix = ExtractNthNibble(opcode, 3);
-    return m_instructionTable.at(prefix);
+    return m_instructionTable.at(decodedOpcode.nibbles.back());
 }
 
 #pragma region Instructions
 
-void CHIP8::VirtualMachine::ZeroPrefixInstuctions(std::uint16_t opcode)
+void CHIP8::VirtualMachine::UnimplementedInstruction(const DecodedOpcode& decodedOpcode)
 {
-    switch (opcode) 
+    throw std::runtime_error(std::format("Encountered unimplemented opcode: {}", decodedOpcode.ToUInt16(decodedOpcode.nibbles.size())));
+}
+
+void CHIP8::VirtualMachine::ZeroPrefixInstuctions(const DecodedOpcode& decodedOpcode)
+{
+    switch (decodedOpcode.nibbles.front()) 
     {   
         //opcode for clear display
-        case 0x00E0:
+        case 0x0:
             ClearDisplay();
         break;
 
         //opcode for return
-        case 0x00EE:
+        case 0xE:
             unimplemented(std::source_location::current());
         break;
 
@@ -114,14 +142,14 @@ void CHIP8::VirtualMachine::ClearDisplay()
     m_displayMemory.fill(0);
 }
 
-void CHIP8::VirtualMachine::Call(std::uint16_t opcode)
+void CHIP8::VirtualMachine::Call(const DecodedOpcode& decodedOpcode)
 {
     unimplemented(std::source_location::current());
 }
 
-void CHIP8::VirtualMachine::Jump(std::uint16_t opcode)
+void CHIP8::VirtualMachine::Jump(const DecodedOpcode& decodedOpcode)
 {
-    const auto address = ExtractFirstNBits(opcode, 12);
+    std::uint16_t address = decodedOpcode.GetAddress();
     m_programCounter = address;
 }
 
@@ -130,14 +158,47 @@ void CHIP8::VirtualMachine::SkipNextInstruction()
     m_programCounter += INSTRUCTION_WIDTH;
 }
 
-void CHIP8::VirtualMachine::SkipOnRegValEqual(std::uint16_t opcode)
+void CHIP8::VirtualMachine::SkipOnRegValEqual(const DecodedOpcode& decodedOpcode)
 {
-    const auto registerIndex = ExtractNthNibble(opcode, 2);
-    const auto value = std::byte{static_cast<unsigned char>(ExtractFirstNBits(opcode, 8))};
+    const auto [registerIndex, _] = decodedOpcode.GetRegIndices();
+    const auto value = decodedOpcode.GetValue();
     if (m_registers.at(registerIndex) == value)
     {
         SkipNextInstruction();
     }
+}
+
+void CHIP8::VirtualMachine::SkipOnRegValNotEqual(const DecodedOpcode& decodedOpcode)
+{
+    const auto [registerIndex, _] = decodedOpcode.GetRegIndices();
+    const auto value = decodedOpcode.GetValue();
+    if (m_registers.at(registerIndex) != value)
+    {
+        SkipNextInstruction();
+    }
+}
+
+void CHIP8::VirtualMachine::SkipOnRegsEqual(const DecodedOpcode& decodedOpcode)
+{
+    const auto regIndices = decodedOpcode.GetRegIndices();
+    if (m_registers.at(regIndices.first) == m_registers.at(regIndices.second))
+    {
+        SkipNextInstruction();
+    }
+}
+
+void CHIP8::VirtualMachine::SetReg(const DecodedOpcode& decodedOpcode)
+{
+    const auto [registerIndex, _] = decodedOpcode.GetRegIndices();
+    const auto value = decodedOpcode.GetValue();
+    m_registers.at(registerIndex) = value;
+}
+
+void CHIP8::VirtualMachine::Add(const DecodedOpcode& decodedOpcode)
+{
+    const auto regIndices = decodedOpcode.GetRegIndices();
+    const std::uint8_t additionResult = std::to_integer<std::uint8_t>(m_registers.at(regIndices.first)) + std::to_integer<std::uint8_t>(m_registers.at(regIndices.second));
+    m_registers.at(regIndices.first) = std::byte {additionResult};
 }
 
 #pragma endregion Instructions
