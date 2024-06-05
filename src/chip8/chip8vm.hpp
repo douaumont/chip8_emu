@@ -4,6 +4,7 @@
 #include <bitset>
 #include <bit>
 #include <functional>
+#include <span>
 #include <cstddef>
 #include <cstdint>
 
@@ -79,9 +80,21 @@ namespace CHIP8
         //prefix = 7
         void Add(const DecodedOpcode& decodedOpcode);
 
+        //prefix = 8
+        void EightPrefixInstructions(const DecodedOpcode& decodedOpcode);
+
+        //prefix = 9
+        void SkipOnRegsNotEqual(const DecodedOpcode& decodedOpcode);
+
+        //prefix = A
+        void SetAddressReg(const DecodedOpcode& decodedOpcode);
+
+        //prefix = B
+        void JumpWithOffset(const DecodedOpcode& decodedOpcode);
+
     public:
         VirtualMachine();
-        [[deprecated("Unimplemented")]]
+        void LoadProgram(std::span<const std::byte> program);
         void OnClock();
     };
 }

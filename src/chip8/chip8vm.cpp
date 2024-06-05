@@ -1,6 +1,8 @@
 #include "chip8vm.hpp"
 #include <bitset>
 #include <cstddef>
+#include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <ranges>
 #include <source_location>
@@ -76,23 +78,34 @@ CHIP8::VirtualMachine::VirtualMachine()
     {
         Instruction {&CHIP8::VirtualMachine::ZeroPrefixInstuctions},
         Instruction {&CHIP8::VirtualMachine::Jump},
-        Instruction{},
-        Instruction(&CHIP8::VirtualMachine::SkipOnRegValEqual),
+        Instruction {&CHIP8::VirtualMachine::Call},
+        Instruction {&CHIP8::VirtualMachine::SkipOnRegValEqual},
+        Instruction {&CHIP8::VirtualMachine::SkipOnRegValNotEqual},
+        Instruction {&CHIP8::VirtualMachine::SkipOnRegsEqual},
+        Instruction {&CHIP8::VirtualMachine::SetReg},
+        Instruction {&CHIP8::VirtualMachine::Add},
+        Instruction {&CHIP8::VirtualMachine::EightPrefixInstructions},
+        Instruction {&CHIP8::VirtualMachine::SkipOnRegsNotEqual},
     };
+}
+
+void CHIP8::VirtualMachine::LoadProgram(std::span<const std::byte> program)
+{
+    std::ranges::copy(program, std::begin(m_memory) + INITIAL_ADDRESS);
 }
 
 void CHIP8::VirtualMachine::OnClock()
 {
     //fetch instruction
     const auto opcode = FetchNextInstruction();
-    //increase value of program counter
-    m_programCounter += INSTRUCTION_WIDTH;
     //decode it
     const auto decodedOpcode = DecodedOpcode{opcode};
     //find instruction
     const auto instruction = GetInstruction(decodedOpcode);
     //execute it
-    instruction(this, opcode);
+    instruction(this, std::cref(decodedOpcode));
+    //increase value of program counter
+    m_programCounter += INSTRUCTION_WIDTH;
 }
 
 std::uint16_t CHIP8::VirtualMachine::FetchNextInstruction() const
@@ -199,6 +212,104 @@ void CHIP8::VirtualMachine::Add(const DecodedOpcode& decodedOpcode)
     const auto regIndices = decodedOpcode.GetRegIndices();
     const std::uint8_t additionResult = std::to_integer<std::uint8_t>(m_registers.at(regIndices.first)) + std::to_integer<std::uint8_t>(m_registers.at(regIndices.second));
     m_registers.at(regIndices.first) = std::byte {additionResult};
+}
+
+void CHIP8::VirtualMachine::EightPrefixInstructions(const DecodedOpcode& decodedOpcode)
+{
+    const auto [firstRegIndex, secondRegIndex] = decodedOpcode.GetRegIndices();
+    auto& firstReg = m_registers.at(firstRegIndex);
+    auto& secondReg = m_registers.at(secondRegIndex);
+
+    switch (decodedOpcode.nibbles.front()) 
+    {
+        //Vx = Vy
+        case 0:
+            firstReg = secondReg;
+            break;
+
+        //Vx = Vx OR Vy
+        case 1:
+            firstReg |= secondReg;
+            break;
+
+        //Vx = Vx AND Vy
+        case 2:
+            firstReg &= secondReg;
+            break;
+
+        //Vx = Vx XOR Vy
+        case 3:
+            firstReg ^= secondReg;
+            break;
+
+        //Vx = Vx + Vy, VF = 1 if overflow, 0 otherwise
+        case 4:
+        {
+            auto result = std::to_integer<std::uint16_t>(firstReg);
+            result += std::to_integer<std::uint16_t>(secondReg);
+            firstReg = std::byte {static_cast<std::uint8_t>(result & 0xFF)};
+            m_registers.at(0xF) = result > std::numeric_limits<std::uint8_t>::max() ? std::byte {1} : std::byte {0};
+        }
+            break;
+        
+        //Vx = Vx - Vy, VF = 1 if no borrow, 0 otherwise
+        case 5:
+        {
+            auto result = std::to_integer<std::uint8_t>(firstReg);
+            result -= std::to_integer<std::uint8_t>(secondReg);
+            firstReg = std::byte {result};
+            m_registers.at(0xF) = firstReg > secondReg ? std::byte {1} : std::byte {0};
+        }
+            break;
+
+        //Vx = Vx >> 1, VF = least significant bit of Vx before shift
+        case 6:
+        {
+            m_registers.at(0xF) = firstReg & std::byte {1};
+            firstReg >>= 1;
+        }
+            break;
+
+        //Vx = Vy - Vx, VF = 1 if no borrow, 0 otherwise
+        case 7:
+        {
+            auto result = std::to_integer<std::uint8_t>(secondReg);
+            result -= std::to_integer<std::uint8_t>(firstReg);
+            firstReg = std::byte {result};
+            m_registers.at(0xF) = secondReg > firstReg ? std::byte {1} : std::byte {0};
+        }
+            break;
+
+        //Vx = Vx << 1, VF = most significant bit of Vx before shift
+        case 0xE:
+        {
+            m_registers.at(0xF) = (firstReg & std::byte {0b1000'0000}) >> 7;
+            firstReg <<= 1;
+        }
+            break;
+    }
+}
+
+void CHIP8::VirtualMachine::SkipOnRegsNotEqual(const DecodedOpcode& decodedOpcode)
+{
+    const auto [firstRegIndex, secondRegIndex] = decodedOpcode.GetRegIndices();
+    const auto& firstReg = m_registers.at(firstRegIndex);
+    const auto& secondReg = m_registers.at(secondRegIndex);
+
+    if (firstReg != secondReg)
+    {
+        SkipNextInstruction();
+    }
+}
+
+void CHIP8::VirtualMachine::SetAddressReg(const DecodedOpcode& decodedOpcode)
+{
+    m_addressRegister = decodedOpcode.GetAddress();
+}
+
+void CHIP8::VirtualMachine::JumpWithOffset(const DecodedOpcode& decodedOpcode)
+{
+    m_programCounter = decodedOpcode.GetAddress() + std::to_integer<std::uint16_t>(m_registers.at(0));
 }
 
 #pragma endregion Instructions
