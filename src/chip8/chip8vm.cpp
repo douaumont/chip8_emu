@@ -71,6 +71,8 @@ CHIP8::VirtualMachine::VirtualMachine()
     m_displayMemory.fill(0);
     m_registers.fill(std::byte{0});
     m_memory.fill(std::byte{0});
+    std::ranges::copy(FONT | std::views::transform([](const auto n) {return std::byte{n};}), 
+        std::begin(m_memory) + FONT_ADDRESS_START);
 
     m_instructionTable.fill(Instruction {&CHIP8::VirtualMachine::UnimplementedInstruction});
 
@@ -123,6 +125,40 @@ CHIP8::VirtualMachine::Instruction CHIP8::VirtualMachine::GetInstruction(const D
     return m_instructionTable.at(decodedOpcode.nibbles.back());
 }
 
+void CHIP8::VirtualMachine::DrawSprite(std::uint8_t x, std::uint8_t y, std::span<std::byte> sprite)
+{
+    const auto toBitset = 
+    [](std::byte n)
+    {
+        return std::bitset<8> {std::to_integer<std::uint8_t>(n)};
+    };
+    bool erasedPixel {false};
+    const std::uint8_t spriteRowsToDraw = (y + sprite.size()) < DISPLAY_HEIGHT ? sprite.size() : (DISPLAY_HEIGHT - y);
+    for (const auto [spriteRowIndex, spriteRow] : 
+        sprite | 
+        std::views::take(spriteRowsToDraw) | 
+        std::views::transform(toBitset) | 
+        std::views::enumerate)
+    {
+        auto& currentDisplayRow = m_displayMemory.at(spriteRowIndex + y);
+        const auto currentDisplayRowValue = currentDisplayRow.to_ullong();
+        const std::uint64_t mask = 0xFFULL << x;
+        const auto pixelsToOverwrite = currentDisplayRowValue & mask;
+        if (pixelsToOverwrite > 0)
+        {
+            erasedPixel = true;
+        }
+        const auto newDisplayRow = currentDisplayRowValue ^ (spriteRow.to_ullong() << x);
+        currentDisplayRow = newDisplayRow;
+    }
+    m_registers.at(0xF) = erasedPixel ? std::byte {1} : std::byte {0};
+}
+
+CHIP8::VirtualMachine::DisplayMemory CHIP8::VirtualMachine::GetDisplayMemory() const
+{
+    return m_displayMemory;
+}
+
 #pragma region Instructions
 
 void CHIP8::VirtualMachine::UnimplementedInstruction(const DecodedOpcode& decodedOpcode)
@@ -134,14 +170,15 @@ void CHIP8::VirtualMachine::ZeroPrefixInstuctions(const DecodedOpcode& decodedOp
 {
     switch (decodedOpcode.nibbles.front()) 
     {   
-        //opcode for clear display
+        //clear display
         case 0x0:
-            ClearDisplay();
+            m_displayMemory.fill(0);
         break;
 
-        //opcode for return
+        //return from subroutine
         case 0xE:
-            unimplemented(std::source_location::current());
+            m_programCounter = m_stack.back();
+            m_stack.pop_back();
         break;
 
         //ignore anything else
@@ -150,20 +187,16 @@ void CHIP8::VirtualMachine::ZeroPrefixInstuctions(const DecodedOpcode& decodedOp
     }
 }
 
-void CHIP8::VirtualMachine::ClearDisplay()
-{
-    m_displayMemory.fill(0);
-}
-
 void CHIP8::VirtualMachine::Call(const DecodedOpcode& decodedOpcode)
 {
-    unimplemented(std::source_location::current());
+    m_stack.push_back(m_programCounter);
+    m_programCounter = decodedOpcode.GetAddress() - INSTRUCTION_WIDTH;
 }
 
 void CHIP8::VirtualMachine::Jump(const DecodedOpcode& decodedOpcode)
 {
     std::uint16_t address = decodedOpcode.GetAddress();
-    m_programCounter = address;
+    m_programCounter = address - INSTRUCTION_WIDTH;
 }
 
 void CHIP8::VirtualMachine::SkipNextInstruction()
@@ -310,6 +343,24 @@ void CHIP8::VirtualMachine::SetAddressReg(const DecodedOpcode& decodedOpcode)
 void CHIP8::VirtualMachine::JumpWithOffset(const DecodedOpcode& decodedOpcode)
 {
     m_programCounter = decodedOpcode.GetAddress() + std::to_integer<std::uint16_t>(m_registers.at(0));
+}
+
+void CHIP8::VirtualMachine::AndWithRandom(const DecodedOpcode& decodedOpcode)
+{
+    const auto randByte = std::byte {m_randomByteSrc()};
+    const auto value = decodedOpcode.GetValue();
+    const auto [regIndex, _] = decodedOpcode.GetRegIndices();
+    m_registers.at(regIndex) = randByte & value;
+}
+
+void CHIP8::VirtualMachine::Draw(const DecodedOpcode& decodedOpcode)
+{
+    const auto [firstRegIndex, secondRegIndex] = decodedOpcode.GetRegIndices();
+    const auto x = std::to_integer<std::uint8_t>(m_registers.at(firstRegIndex));
+    const auto y = std::to_integer<std::uint8_t>(m_registers.at(secondRegIndex));
+    const auto spriteSize = decodedOpcode.nibbles.front();
+    const auto sprite = std::span {std::begin(m_memory) + m_addressRegister, spriteSize};
+    DrawSprite(x, y, sprite);
 }
 
 #pragma endregion Instructions

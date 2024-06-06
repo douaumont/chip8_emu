@@ -7,6 +7,8 @@
 #include <span>
 #include <cstddef>
 #include <cstdint>
+#include <boost/container/static_vector.hpp>
+#include "randomByteSrc.hpp"
 
 namespace CHIP8
 {
@@ -34,19 +36,47 @@ namespace CHIP8
             DISPLAY_HEIGHT = 32,
             ADDRESS_BUS_WIDTH = std::bit_width(MEMORY_SIZE),
             INITIAL_ADDRESS = 0x200,
-            INSTRUCTION_WIDTH = 2;
+            INSTRUCTION_WIDTH = 2,
+            STACK_SIZE = 16,
+            FONT_SIZE = 5 * 16,
+            FONT_ADDRESS_START = 0x50;
+
+        static constexpr std::array<std::uint8_t, FONT_SIZE> FONT = 
+        {
+            0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+            0x20, 0x60, 0x20, 0x20, 0x70, // 1
+            0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+            0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+            0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+            0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+            0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+            0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+            0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+            0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+            0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+            0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+            0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+            0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+            0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+            0xF0, 0x80, 0xF0, 0x80, 0x80  // F
+        };
         
         using Instruction = std::function<void(VirtualMachine* vm, const DecodedOpcode&)>;
+        using DisplayMemory = std::array<std::bitset<DISPLAY_WIDTH>, DISPLAY_HEIGHT>;
 
         std::array<std::byte, MEMORY_SIZE> m_memory;
         std::array<std::byte, REGISTER_COUNT> m_registers;
         std::uint16_t m_addressRegister, m_programCounter;
-        std::array<std::bitset<DISPLAY_WIDTH>, DISPLAY_HEIGHT> m_displayMemory;
+        DisplayMemory m_displayMemory;
+        boost::container::static_vector<std::uint16_t, STACK_SIZE> m_stack;
+        RandomByteSource m_randomByteSrc;
 
         std::array<Instruction, 16> m_instructionTable;
 
         std::uint16_t FetchNextInstruction() const;
         Instruction GetInstruction(const DecodedOpcode& decodedOpcode) const;
+
+        void DrawSprite(std::uint8_t x, std::uint8_t y, std::span<std::byte> sprite);
 
         /*Instructions*/ 
 
@@ -54,7 +84,6 @@ namespace CHIP8
 
         //prefix = 0
         void ZeroPrefixInstuctions(const DecodedOpcode& decodedOpcode);
-        void ClearDisplay();
 
         //prefix = 1
         void Jump(const DecodedOpcode& decodedOpcode);
@@ -92,9 +121,16 @@ namespace CHIP8
         //prefix = B
         void JumpWithOffset(const DecodedOpcode& decodedOpcode);
 
+        //prefix = C
+        void AndWithRandom(const DecodedOpcode& decodedOpcode);
+
+        //prefix = D
+        void Draw(const DecodedOpcode& decodedOpcode);
+
     public:
         VirtualMachine();
         void LoadProgram(std::span<const std::byte> program);
+        DisplayMemory GetDisplayMemory() const;
         void OnClock();
     };
 }
