@@ -127,17 +127,24 @@ CHIP8::VirtualMachine::Instruction CHIP8::VirtualMachine::GetInstruction(const D
 
 void CHIP8::VirtualMachine::DrawSprite(std::uint8_t x, std::uint8_t y, std::span<std::byte> sprite)
 {
-    const auto toBitset = 
+    const auto toBitsetAndReverse = 
     [](std::byte n)
     {
-        return std::bitset<8> {std::to_integer<std::uint8_t>(n)};
+        auto bitset = std::bitset<8> {std::to_integer<std::uint8_t>(n)};
+        for (const auto i : std::views::iota(0UZ, bitset.size() / 2))
+        {
+            const bool temp = bitset[i];
+            bitset[i] = bitset[bitset.size() - i - 1];
+            bitset[bitset.size() - i - 1] = temp;
+        }
+        return bitset;
     };
     bool erasedPixel {false};
     const std::uint8_t spriteRowsToDraw = (y + sprite.size()) < DISPLAY_HEIGHT ? sprite.size() : (DISPLAY_HEIGHT - y);
     for (const auto [spriteRowIndex, spriteRow] : 
         sprite | 
         std::views::take(spriteRowsToDraw) | 
-        std::views::transform(toBitset) | 
+        std::views::transform(toBitsetAndReverse) | 
         std::views::enumerate)
     {
         auto& currentDisplayRow = m_displayMemory.at(spriteRowIndex + y);

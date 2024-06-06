@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <boost/container/static_vector.hpp>
 #include "randomByteSrc.hpp"
+#include "keyboard.hpp"
 
 namespace CHIP8
 {
@@ -70,6 +71,7 @@ namespace CHIP8
         DisplayMemory m_displayMemory;
         boost::container::static_vector<std::uint16_t, STACK_SIZE> m_stack;
         RandomByteSource m_randomByteSrc;
+        Keyboard m_keyboard;
 
         std::array<Instruction, 16> m_instructionTable;
 

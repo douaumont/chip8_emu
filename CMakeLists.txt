@@ -8,6 +8,7 @@ add_executable(${PROJECT_NAME})
 target_sources(${PROJECT_NAME} PRIVATE 
     src/chip8/chip8vm.cpp
     src/chip8/randomByteSrc.cpp
+    src/chip8/keyboard.cpp
     src/app.cpp)
 
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
