@@ -1,4 +1,6 @@
 #include "chip8vm.hpp"
+#include "keyboard.hpp"
+#include <algorithm>
 #include <bitset>
 #include <cstddef>
 #include <iterator>
@@ -13,6 +15,21 @@ namespace
     void unimplemented(const std::source_location& srcLoc)
     {
         throw std::runtime_error {std::format("Unimplemented at {}:{}:{}", srcLoc.file_name(), srcLoc.function_name(), srcLoc.line())};
+    }
+
+    std::array<std::byte, 3> ToBCD(std::uint8_t n)
+    {
+        std::array<std::byte, 3> digits;
+        
+        for (auto& digit : digits)
+        {
+            digit = std::byte {static_cast<std::uint8_t>(n % 10)};
+            n /= 10;
+        }
+
+        std::ranges::reverse(digits);
+
+        return digits;
     }
 }
 
@@ -66,7 +83,11 @@ std::pair<std::uint8_t, std::uint8_t> CHIP8::DecodedOpcode::GetRegIndices() cons
 CHIP8::VirtualMachine::VirtualMachine()
     :
     m_addressRegister(0x000),
-    m_programCounter(INITIAL_ADDRESS)
+    m_programCounter(INITIAL_ADDRESS),
+    m_ioCtx(),
+    m_delayTimer(m_ioCtx),
+    m_soundTimer(m_ioCtx),
+    m_clock(m_ioCtx)
 {
     m_displayMemory.fill(0);
     m_registers.fill(std::byte{0});
@@ -88,6 +109,12 @@ CHIP8::VirtualMachine::VirtualMachine()
         Instruction {&CHIP8::VirtualMachine::Add},
         Instruction {&CHIP8::VirtualMachine::EightPrefixInstructions},
         Instruction {&CHIP8::VirtualMachine::SkipOnRegsNotEqual},
+        Instruction {&CHIP8::VirtualMachine::SetAddressReg},
+        Instruction {&CHIP8::VirtualMachine::JumpWithOffset},
+        Instruction {&CHIP8::VirtualMachine::AndWithRandom},
+        Instruction {&CHIP8::VirtualMachine::Draw},
+        Instruction {&CHIP8::VirtualMachine::SkipOnKeyState},
+        Instruction {&CHIP8::VirtualMachine::FPrefixInstructions},
     };
 }
 
@@ -96,8 +123,13 @@ void CHIP8::VirtualMachine::LoadProgram(std::span<const std::byte> program)
     std::ranges::copy(program, std::begin(m_memory) + INITIAL_ADDRESS);
 }
 
-void CHIP8::VirtualMachine::OnClock()
+void CHIP8::VirtualMachine::OnClock(const boost::system::error_code& errc)
 {
+    if (errc)
+    {
+        m_ioCtx.stop();
+        return;
+    }
     //fetch instruction
     const auto opcode = FetchNextInstruction();
     //decode it
@@ -108,6 +140,9 @@ void CHIP8::VirtualMachine::OnClock()
     instruction(this, std::cref(decodedOpcode));
     //increase value of program counter
     m_programCounter += INSTRUCTION_WIDTH;
+    
+    m_clock.expires_after(CLOCK_PERIOD);
+    m_clock.async_wait(std::bind(&CHIP8::VirtualMachine::OnClock, this, std::placeholders::_1));
 }
 
 std::uint16_t CHIP8::VirtualMachine::FetchNextInstruction() const
@@ -368,6 +403,91 @@ void CHIP8::VirtualMachine::Draw(const DecodedOpcode& decodedOpcode)
     const auto spriteSize = decodedOpcode.nibbles.front();
     const auto sprite = std::span {std::begin(m_memory) + m_addressRegister, spriteSize};
     DrawSprite(x, y, sprite);
+}
+
+void CHIP8::VirtualMachine::SkipOnKeyState(const DecodedOpcode& decodedOpcode)
+{
+    const auto [regIndex, _] = decodedOpcode.GetRegIndices();
+    const auto operationCode = decodedOpcode.GetValue();
+    const auto keyCode = std::to_integer<std::uint8_t>(m_registers.at(regIndex));
+    
+    if (operationCode == std::byte {0x9E} and m_keyboard.IsKeyPressed(CHIP8::Key{keyCode}))
+    {
+        SkipNextInstruction();
+        return;
+    }
+
+    if (operationCode == std::byte {0xA1} and not m_keyboard.IsKeyPressed(CHIP8::Key{keyCode}))
+    {
+        SkipNextInstruction();
+        return;
+    }
+}
+
+void CHIP8::VirtualMachine::FPrefixInstructions(const DecodedOpcode& decodedOpcode)
+{
+    const auto [regIndex, _] = decodedOpcode.GetRegIndices();
+    const auto operationCode = std::to_integer<std::uint8_t>(decodedOpcode.GetValue());
+
+    switch(operationCode)
+    {
+        //Vx = delay timer
+        case 0x07:
+            m_registers.at(regIndex) = std::byte{m_delayTimer.GetValue()};
+            break;
+
+        //wait for a key to be pressed and store the key code in Vx 
+        case 0x0A:
+        {
+            const auto pressedKey = static_cast<std::uint8_t>(m_keyboard.WaitForKeyPress());
+            m_registers.at(regIndex) = std::byte{pressedKey};
+        }
+            break;
+        
+        //delay timer = Vx
+        case 0x15:
+            m_delayTimer.Set(std::to_integer<std::uint8_t>(m_registers.at(regIndex)));
+            break;
+        
+        //sound timer = Vx
+        case 0x18:
+            m_soundTimer.Set(std::to_integer<std::uint8_t>(m_registers.at(regIndex)));
+            break;
+
+        //I = I + Vx
+        case 0x1E:
+            m_addressRegister += std::to_integer<std::uint16_t>(m_registers.at(regIndex));
+            break;
+
+        //I = memory location of digit Vx
+        case 0x29:
+        {
+            const auto digit = std::to_integer<std::uint16_t>(m_registers.at(regIndex));
+            const auto digitAddressStart = FONT_ADDRESS_START + digit * HEX_DIGIT_SPRITE_SIZE;
+            m_addressRegister = digitAddressStart;
+        }
+            break;
+
+        //store BCD of Vx in memory
+        case 0x33:
+        {
+            const auto bcd = ToBCD(std::to_integer<std::uint8_t>(m_registers.at(regIndex)));
+            std::ranges::copy(bcd, std::begin(m_memory) + m_addressRegister);
+        }
+            break;
+        
+        //store registers from 0 to x in memory
+        case 0x55:
+            std::copy(std::begin(m_registers), std::begin(m_registers) + regIndex + 1, 
+                std::begin(m_memory) + m_addressRegister);
+            break;
+        
+        //read registers from 0 to x from memory
+        case 0x65:
+            std::copy(std::begin(m_memory) + m_addressRegister, std::begin(m_memory) + m_addressRegister + regIndex + 1, 
+                std::begin(m_registers));
+            break;
+    }
 }
 
 #pragma endregion Instructions

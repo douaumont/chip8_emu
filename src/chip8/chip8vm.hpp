@@ -3,11 +3,15 @@
 #include <array>
 #include <bitset>
 #include <bit>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/system/detail/error_code.hpp>
 #include <functional>
 #include <span>
 #include <cstddef>
 #include <cstdint>
 #include <boost/container/static_vector.hpp>
+#include "timer.hpp"
 #include "randomByteSrc.hpp"
 #include "keyboard.hpp"
 
@@ -39,8 +43,11 @@ namespace CHIP8
             INITIAL_ADDRESS = 0x200,
             INSTRUCTION_WIDTH = 2,
             STACK_SIZE = 16,
-            FONT_SIZE = 5 * 16,
+            HEX_DIGIT_SPRITE_SIZE = 5,
+            FONT_SIZE = HEX_DIGIT_SPRITE_SIZE * 16,
             FONT_ADDRESS_START = 0x50;
+
+        static constexpr auto CLOCK_PERIOD = 2ms;
 
         static constexpr std::array<std::uint8_t, FONT_SIZE> FONT = 
         {
@@ -65,6 +72,7 @@ namespace CHIP8
         using Instruction = std::function<void(VirtualMachine* vm, const DecodedOpcode&)>;
         using DisplayMemory = std::array<std::bitset<DISPLAY_WIDTH>, DISPLAY_HEIGHT>;
 
+        asio::io_context m_ioCtx;
         std::array<std::byte, MEMORY_SIZE> m_memory;
         std::array<std::byte, REGISTER_COUNT> m_registers;
         std::uint16_t m_addressRegister, m_programCounter;
@@ -72,6 +80,8 @@ namespace CHIP8
         boost::container::static_vector<std::uint16_t, STACK_SIZE> m_stack;
         RandomByteSource m_randomByteSrc;
         Keyboard m_keyboard;
+        Timer m_delayTimer, m_soundTimer;
+        asio::steady_timer m_clock;
 
         std::array<Instruction, 16> m_instructionTable;
 
@@ -129,10 +139,17 @@ namespace CHIP8
         //prefix = D
         void Draw(const DecodedOpcode& decodedOpcode);
 
+        //prefix = E
+        void SkipOnKeyState(const DecodedOpcode& decodedOpcode);
+
+        //prefix = F
+        void FPrefixInstructions(const DecodedOpcode& decodedOpcode);
+
+        void OnClock(const boost::system::error_code& errc);
+
     public:
         VirtualMachine();
         void LoadProgram(std::span<const std::byte> program);
         DisplayMemory GetDisplayMemory() const;
-        void OnClock();
     };
 }
