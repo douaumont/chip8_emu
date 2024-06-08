@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <iterator>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <ranges>
 #include <source_location>
@@ -76,7 +77,7 @@ std::uint16_t CHIP8::DecodedOpcode::GetAddress() const
 
 std::pair<std::uint8_t, std::uint8_t> CHIP8::DecodedOpcode::GetRegIndices() const
 {
-    return {nibbles.at(2), nibbles.at(3)};
+    return {nibbles.at(2), nibbles.at(1)};
 }
 
 
@@ -87,13 +88,16 @@ CHIP8::VirtualMachine::VirtualMachine()
     m_ioCtx(),
     m_delayTimer(m_ioCtx),
     m_soundTimer(m_ioCtx),
-    m_clock(m_ioCtx)
+    m_clock(m_ioCtx),
+    m_displayMemory(boost::extents[DISPLAY_HEIGHT][DISPLAY_WIDTH])
 {
-    m_displayMemory.fill(0);
     m_registers.fill(std::byte{0});
     m_memory.fill(std::byte{0});
     std::ranges::copy(FONT | std::views::transform([](const auto n) {return std::byte{n};}), 
         std::begin(m_memory) + FONT_ADDRESS_START);
+    
+    m_clock.expires_after(CLOCK_PERIOD);
+    m_clock.async_wait(std::bind(&CHIP8::VirtualMachine::OnClock, this, std::placeholders::_1));
 
     m_instructionTable.fill(Instruction {&CHIP8::VirtualMachine::UnimplementedInstruction});
 
@@ -121,6 +125,14 @@ CHIP8::VirtualMachine::VirtualMachine()
 void CHIP8::VirtualMachine::LoadProgram(std::span<const std::byte> program)
 {
     std::ranges::copy(program, std::begin(m_memory) + INITIAL_ADDRESS);
+}
+
+void CHIP8::VirtualMachine::ClearDisplay()
+{
+    for (auto&& row : m_displayMemory)
+    {
+        std::ranges::fill(row, false);
+    }
 }
 
 void CHIP8::VirtualMachine::OnClock(const boost::system::error_code& errc)
@@ -162,43 +174,61 @@ CHIP8::VirtualMachine::Instruction CHIP8::VirtualMachine::GetInstruction(const D
 
 void CHIP8::VirtualMachine::DrawSprite(std::uint8_t x, std::uint8_t y, std::span<std::byte> sprite)
 {
-    const auto toBitsetAndReverse = 
-    [](std::byte n)
+    if (x >= DISPLAY_WIDTH or y >= DISPLAY_HEIGHT)
     {
-        auto bitset = std::bitset<8> {std::to_integer<std::uint8_t>(n)};
-        for (const auto i : std::views::iota(0UZ, bitset.size() / 2))
-        {
-            const bool temp = bitset[i];
-            bitset[i] = bitset[bitset.size() - i - 1];
-            bitset[bitset.size() - i - 1] = temp;
-        }
-        return bitset;
+        return;
+    }
+    std::lock_guard loc {m_displayMemoryMtx};
+    const auto logicalXor = [](bool lhs, bool rhs)
+    {
+        return (not lhs and rhs) or (lhs and not rhs);
     };
+
+    const auto toBitsetAndReverse = [](std::byte n)
+    {
+        std::bitset<8> rev {std::to_integer<std::uint8_t>(n)};
+
+        for (const auto i : std::views::iota(0UZ, rev.size() / 2))
+        {
+            const bool temp = rev[i];
+            rev[i] = static_cast<bool>(rev[rev.size() - i - 1]);
+            rev[rev.size() - i - 1] = temp;
+        }
+
+        return rev;
+    };
+
     bool erasedPixel {false};
-    const std::uint8_t spriteRowsToDraw = (y + sprite.size()) < DISPLAY_HEIGHT ? sprite.size() : (DISPLAY_HEIGHT - y);
-    for (const auto [spriteRowIndex, spriteRow] : 
+
+    for (const auto [rowOffset, spriteRow] : 
         sprite | 
-        std::views::take(spriteRowsToDraw) | 
-        std::views::transform(toBitsetAndReverse) | 
+        std::views::transform(toBitsetAndReverse) |
         std::views::enumerate)
     {
-        auto& currentDisplayRow = m_displayMemory.at(spriteRowIndex + y);
-        const auto currentDisplayRowValue = currentDisplayRow.to_ullong();
-        const std::uint64_t mask = 0xFFULL << x;
-        const auto pixelsToOverwrite = currentDisplayRowValue & mask;
-        if (pixelsToOverwrite > 0)
+        auto&& displayRow = m_displayMemory[y + rowOffset];
+        for (const auto columnOffset : 
+            std::views::iota(0UZ, std::min(spriteRow.size(), static_cast<size_t>(DISPLAY_WIDTH - x))))
         {
-            erasedPixel = true;
+            const auto oldPixel = displayRow[x + columnOffset];
+            const auto newPixel = logicalXor(oldPixel, spriteRow[columnOffset]);
+            if (oldPixel == true and newPixel == false)
+            {
+                erasedPixel = true;
+            }
+            displayRow[x + columnOffset] = newPixel;
         }
-        const auto newDisplayRow = currentDisplayRowValue ^ (spriteRow.to_ullong() << x);
-        currentDisplayRow = newDisplayRow;
     }
-    m_registers.at(0xF) = erasedPixel ? std::byte {1} : std::byte {0};
 }
 
-CHIP8::VirtualMachine::DisplayMemory CHIP8::VirtualMachine::GetDisplayMemory() const
+CHIP8::VirtualMachine::DisplayMemory CHIP8::VirtualMachine::GetDisplayMemory()
 {
+    std::lock_guard lock {m_displayMemoryMtx};
     return m_displayMemory;
+}
+
+void CHIP8::VirtualMachine::Run()
+{
+    m_ioCtx.run();
 }
 
 #pragma region Instructions
@@ -214,7 +244,7 @@ void CHIP8::VirtualMachine::ZeroPrefixInstuctions(const DecodedOpcode& decodedOp
     {   
         //clear display
         case 0x0:
-            m_displayMemory.fill(0);
+            ClearDisplay();
         break;
 
         //return from subroutine

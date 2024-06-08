@@ -3,20 +3,22 @@
 #include <array>
 #include <bitset>
 #include <bit>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/system/detail/error_code.hpp>
 #include <functional>
 #include <span>
+#include <mutex>
 #include <cstddef>
 #include <cstdint>
 #include <boost/container/static_vector.hpp>
+#include <boost/asio.hpp>
+#include <boost/multi_array.hpp>
 #include "timer.hpp"
 #include "randomByteSrc.hpp"
 #include "keyboard.hpp"
 
 namespace CHIP8
 {
+    namespace asio = boost::asio;
+
     struct DecodedOpcode
     {
         static constexpr auto NIBBLE_SIZE = 4;
@@ -70,16 +72,20 @@ namespace CHIP8
         };
         
         using Instruction = std::function<void(VirtualMachine* vm, const DecodedOpcode&)>;
-        using DisplayMemory = std::array<std::bitset<DISPLAY_WIDTH>, DISPLAY_HEIGHT>;
+        using DisplayMemory = boost::multi_array<bool, 2>;
 
-        asio::io_context m_ioCtx;
         std::array<std::byte, MEMORY_SIZE> m_memory;
         std::array<std::byte, REGISTER_COUNT> m_registers;
         std::uint16_t m_addressRegister, m_programCounter;
-        DisplayMemory m_displayMemory;
         boost::container::static_vector<std::uint16_t, STACK_SIZE> m_stack;
+
+        std::mutex m_displayMemoryMtx;
+        DisplayMemory m_displayMemory;
+        
         RandomByteSource m_randomByteSrc;
         Keyboard m_keyboard;
+
+        asio::io_context m_ioCtx;
         Timer m_delayTimer, m_soundTimer;
         asio::steady_timer m_clock;
 
@@ -89,6 +95,7 @@ namespace CHIP8
         Instruction GetInstruction(const DecodedOpcode& decodedOpcode) const;
 
         void DrawSprite(std::uint8_t x, std::uint8_t y, std::span<std::byte> sprite);
+        void ClearDisplay();
 
         /*Instructions*/ 
 
@@ -150,6 +157,7 @@ namespace CHIP8
     public:
         VirtualMachine();
         void LoadProgram(std::span<const std::byte> program);
-        DisplayMemory GetDisplayMemory() const;
+        DisplayMemory GetDisplayMemory();
+        void Run();
     };
 }
