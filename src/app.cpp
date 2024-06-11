@@ -1,7 +1,9 @@
 #include <SFML/Graphics/Sprite.hpp>
+#include <SFML/System/Clock.hpp>
 #include <algorithm>
 #include <cstddef>
 #include <exception>
+#include <ostream>
 #include <vector>
 #include <print>
 #include <ranges>
@@ -9,6 +11,7 @@
 #include <fstream>
 #include <filesystem>
 #include <string_view>
+#include <optional>
 #include <SFML/Graphics.hpp>
 #include "chip8/chip8vm.hpp"
 
@@ -36,9 +39,10 @@ int main()
     sf::Texture whiteRectTexture;
     whiteRectTexture.loadFromImage(whiteRectImage);
 
+    std::optional<CHIP8::VirtualMachine::DisplayMemory> previousDisplay;
+
     while (mainWindow.isOpen())
     {
-        
         sf::Event event;
         while (mainWindow.pollEvent(event))
         {
@@ -50,9 +54,21 @@ int main()
         
         mainWindow.clear(sf::Color::Black);
 
-        const auto display = vm.GetDisplayMemory();
+        auto display = vm.GetDisplayMemory();
+        if (display.has_value())
+        {
+            previousDisplay = display;
+        }
+        else if (previousDisplay.has_value())
+        {
+            display = previousDisplay;
+        }
+        else
+        {
+            continue;
+        }
 
-        for (const auto [rowIndex, row] : display | std::views::enumerate)
+        for (const auto [rowIndex, row] : display.value() | std::views::enumerate)
         {
             for (const auto columnIndex : std::views::iota(0UZ, row.size()))
             {
@@ -69,6 +85,7 @@ int main()
         mainWindow.display();
     }
 
+    vm.Stop();
     
     return 0;
 }

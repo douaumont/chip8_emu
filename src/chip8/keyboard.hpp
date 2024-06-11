@@ -7,10 +7,10 @@ namespace CHIP8
 {
     enum class Key
     {
-        _1 = 0, _2, _3, C,
-        _4, _5, _6, D,
-        _7, _8, _9, E,
-        A, _0, B, F
+        _0 = 0, _1, _2, _3,
+        _4, _5, _6, _7,
+        _8, _9, A, B, 
+        C, D, E, F
     };
 
     class Keyboard

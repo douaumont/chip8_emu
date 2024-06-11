@@ -6,8 +6,10 @@
 #include <functional>
 #include <span>
 #include <mutex>
+#include <optional>
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
 #include <boost/container/static_vector.hpp>
 #include <boost/asio.hpp>
 #include <boost/multi_array.hpp>
@@ -36,6 +38,16 @@ namespace CHIP8
 
     class VirtualMachine
     {
+    public:
+        using DisplayMemory = boost::multi_array<bool, 2>;
+        enum class State 
+        {
+            Running,
+            Shutdown
+        };
+        
+    private:
+
         static constexpr unsigned int 
             MEMORY_SIZE = 4096, 
             REGISTER_COUNT = 16,
@@ -72,7 +84,6 @@ namespace CHIP8
         };
         
         using Instruction = std::function<void(VirtualMachine* vm, const DecodedOpcode&)>;
-        using DisplayMemory = boost::multi_array<bool, 2>;
 
         std::array<std::byte, MEMORY_SIZE> m_memory;
         std::array<std::byte, REGISTER_COUNT> m_registers;
@@ -88,6 +99,7 @@ namespace CHIP8
         asio::io_context m_ioCtx;
         Timer m_delayTimer, m_soundTimer;
         asio::steady_timer m_clock;
+        std::atomic<State> m_state;
 
         std::array<Instruction, 16> m_instructionTable;
 
@@ -157,7 +169,8 @@ namespace CHIP8
     public:
         VirtualMachine();
         void LoadProgram(std::span<const std::byte> program);
-        DisplayMemory GetDisplayMemory();
+        std::optional<DisplayMemory> GetDisplayMemory();
+        void Stop();
         void Run();
     };
 }

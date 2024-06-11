@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <bitset>
 #include <cstddef>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <mutex>
+#include <print>
 #include <stdexcept>
 #include <ranges>
 #include <source_location>
@@ -89,7 +91,8 @@ CHIP8::VirtualMachine::VirtualMachine()
     m_delayTimer(m_ioCtx),
     m_soundTimer(m_ioCtx),
     m_clock(m_ioCtx),
-    m_displayMemory(boost::extents[DISPLAY_HEIGHT][DISPLAY_WIDTH])
+    m_displayMemory(boost::extents[DISPLAY_HEIGHT][DISPLAY_WIDTH]),
+    m_state(State::Shutdown)
 {
     m_registers.fill(std::byte{0});
     m_memory.fill(std::byte{0});
@@ -137,7 +140,7 @@ void CHIP8::VirtualMachine::ClearDisplay()
 
 void CHIP8::VirtualMachine::OnClock(const boost::system::error_code& errc)
 {
-    if (errc)
+    if (errc or m_state == State::Shutdown)
     {
         m_ioCtx.stop();
         return;
@@ -200,14 +203,18 @@ void CHIP8::VirtualMachine::DrawSprite(std::uint8_t x, std::uint8_t y, std::span
 
     bool erasedPixel {false};
 
+    const auto rowsToDraw = std::min(DISPLAY_HEIGHT - y, static_cast<unsigned>(sprite.size()));
+    const auto columnsToDraw = std::min(DISPLAY_WIDTH - x, 8U);
+
     for (const auto [rowOffset, spriteRow] : 
         sprite | 
         std::views::transform(toBitsetAndReverse) |
+        std::views::take(rowsToDraw) |
         std::views::enumerate)
     {
         auto&& displayRow = m_displayMemory[y + rowOffset];
         for (const auto columnOffset : 
-            std::views::iota(0UZ, std::min(spriteRow.size(), static_cast<size_t>(DISPLAY_WIDTH - x))))
+            std::views::iota(0UZ, columnsToDraw))
         {
             const auto oldPixel = displayRow[x + columnOffset];
             const auto newPixel = logicalXor(oldPixel, spriteRow[columnOffset]);
@@ -218,17 +225,54 @@ void CHIP8::VirtualMachine::DrawSprite(std::uint8_t x, std::uint8_t y, std::span
             displayRow[x + columnOffset] = newPixel;
         }
     }
+
+    if (erasedPixel)
+    {
+        m_registers.at(0xF) = std::byte {1};
+    }
+    else
+    {
+        m_registers.at(0xF) = std::byte {0};
+    }
 }
 
-CHIP8::VirtualMachine::DisplayMemory CHIP8::VirtualMachine::GetDisplayMemory()
+std::optional<CHIP8::VirtualMachine::DisplayMemory> CHIP8::VirtualMachine::GetDisplayMemory()
 {
-    std::lock_guard lock {m_displayMemoryMtx};
-    return m_displayMemory;
+    struct AutoUnlock
+    {
+        std::reference_wrapper<std::mutex> acquiredMutex;
+        AutoUnlock(std::mutex& mtx)
+            :
+            acquiredMutex(std::ref(mtx))
+        {
+
+        }
+        ~AutoUnlock()
+        {
+            acquiredMutex.get().unlock();
+        }
+    };
+
+    if (m_displayMemoryMtx.try_lock())
+    {
+        AutoUnlock _{m_displayMemoryMtx};
+        return m_displayMemory;
+    }
+    else
+    {
+        return {};
+    }
 }
 
 void CHIP8::VirtualMachine::Run()
 {
+    m_state = State::Running;
     m_ioCtx.run();
+}
+
+void CHIP8::VirtualMachine::Stop()
+{
+    m_state = State::Shutdown;
 }
 
 #pragma region Instructions
@@ -314,9 +358,10 @@ void CHIP8::VirtualMachine::SetReg(const DecodedOpcode& decodedOpcode)
 
 void CHIP8::VirtualMachine::Add(const DecodedOpcode& decodedOpcode)
 {
-    const auto regIndices = decodedOpcode.GetRegIndices();
-    const std::uint8_t additionResult = std::to_integer<std::uint8_t>(m_registers.at(regIndices.first)) + std::to_integer<std::uint8_t>(m_registers.at(regIndices.second));
-    m_registers.at(regIndices.first) = std::byte {additionResult};
+    const auto [regIndex, _] = decodedOpcode.GetRegIndices();
+    const auto value = decodedOpcode.GetValue();
+    const std::uint8_t additionRes = std::to_integer<std::uint8_t>(m_registers.at(regIndex)) + std::to_integer<std::uint8_t>(value);
+    m_registers.at(regIndex) = std::byte{additionRes};
 }
 
 void CHIP8::VirtualMachine::EightPrefixInstructions(const DecodedOpcode& decodedOpcode)
@@ -360,18 +405,20 @@ void CHIP8::VirtualMachine::EightPrefixInstructions(const DecodedOpcode& decoded
         //Vx = Vx - Vy, VF = 1 if no borrow, 0 otherwise
         case 5:
         {
+            const auto carry = firstReg >= secondReg ? std::byte {1} : std::byte {0};
             auto result = std::to_integer<std::uint8_t>(firstReg);
             result -= std::to_integer<std::uint8_t>(secondReg);
             firstReg = std::byte {result};
-            m_registers.at(0xF) = firstReg > secondReg ? std::byte {1} : std::byte {0};
+            m_registers.at(0xF) = carry;
         }
             break;
 
         //Vx = Vx >> 1, VF = least significant bit of Vx before shift
         case 6:
         {
-            m_registers.at(0xF) = firstReg & std::byte {1};
+            const auto carry = firstReg & std::byte {1};
             firstReg >>= 1;
+            m_registers.at(0xF) = carry;
         }
             break;
 
@@ -388,8 +435,9 @@ void CHIP8::VirtualMachine::EightPrefixInstructions(const DecodedOpcode& decoded
         //Vx = Vx << 1, VF = most significant bit of Vx before shift
         case 0xE:
         {
-            m_registers.at(0xF) = (firstReg & std::byte {0b1000'0000}) >> 7;
+            const auto carry = (firstReg & std::byte {0b1000'0000}) >> 7;
             firstReg <<= 1;
+            m_registers.at(0xF) = carry;
         }
             break;
     }
