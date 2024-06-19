@@ -16,17 +16,14 @@
     If not, see <https://www.gnu.org/licenses/>. 
 */
 
-#include "randomByteSrc.hpp"
-#include <random>
+#include <cstdlib>
+#include <boost/nowide/args.hpp>
+#include "app.hpp"
 
-CHIP8::RandomByteSource::RandomByteSource()
-    :
-    m_engine(std::random_device{}())
+int main(int argc, char** argv)
 {
-
-}
-
-std::uint8_t CHIP8::RandomByteSource::operator()()
-{
-    return m_distr(m_engine);
+    boost::nowide::args _{argc, argv};
+    Emulator emulator{argc, argv};
+    emulator.Run();
+    return EXIT_SUCCESS;
 }

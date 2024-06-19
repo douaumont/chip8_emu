@@ -16,17 +16,13 @@
     If not, see <https://www.gnu.org/licenses/>. 
 */
 
-#include "randomByteSrc.hpp"
-#include <random>
+#include "chip8/chip8vm.hpp"
 
-CHIP8::RandomByteSource::RandomByteSource()
-    :
-    m_engine(std::random_device{}())
+class Emulator 
 {
+    CHIP8::VirtualMachine m_virtualMachine;
 
-}
-
-std::uint8_t CHIP8::RandomByteSource::operator()()
-{
-    return m_distr(m_engine);
-}
+public:
+    Emulator(int argc, char** argv);
+    void Run();
+};
